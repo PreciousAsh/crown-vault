@@ -9,6 +9,7 @@ from each player are relayed to the rest of the room.
 import asyncio
 import os
 import random
+import re
 import struct
 import time
 
@@ -94,37 +95,39 @@ class Room:
         await self.broadcast()
         await asyncio.sleep(seconds)
 
+    async def scan(self):
+        """Sweep the beam until nobody moves. Returns False if the crew got caught."""
+        while True:
+            for p in self.players.values():
+                p["flagged"] = False
+            self.event = None
+            self.set_phase("warn", 1.2)
+            await self.wait_phase(1.2)
+            self.set_phase("sweep", self.beam_dur)
+            await self.wait_phase(self.beam_dur)
+            self.beam_dir *= -1
+            if self.strikes >= MAX_FLAGS:
+                self.set_phase("caught")
+                await self.broadcast()
+                return False
+            if not any(p["flagged"] for p in self.players.values()):
+                return True
+            self.set_event("bad", "Rescan", "Someone moved. The whole crew gets scanned again.")
+            self.set_phase("result", 2)
+            await self.wait_phase(2)
+
     async def run(self):
         try:
             self.set_phase("calib", 2.5)
             await self.wait_phase(2.5)
-
-            # Opening scan: repeat until nobody moves, or the crew runs out of flags.
-            while True:
-                for p in self.players.values():
-                    p["flagged"] = False
-                self.event = None
-                self.set_phase("warn", 1.2)
-                await self.wait_phase(1.2)
-                self.set_phase("sweep", self.beam_dur)
-                await self.wait_phase(self.beam_dur)
-                self.beam_dir *= -1
-                if self.strikes >= MAX_FLAGS:
-                    self.set_phase("caught")
-                    await self.broadcast()
-                    return
-                if not any(p["flagged"] for p in self.players.values()):
-                    break
-                self.set_event("bad", "Rescan", "Someone moved. The whole crew gets scanned again.")
-                self.set_phase("result", 2)
-                await self.wait_phase(2)
-
+            if not await self.scan():
+                return
             self.set_event("good", "Scan clear", "Nobody moved. Time to torch the vault.")
             self.set_phase("result", 2)
             await self.wait_phase(2)
 
-            # Torch rounds: each one waits until every player has completed it.
-            while self.progress < 100:
+            # Torch rounds wait until every player has completed them; a scan follows each one.
+            while True:
                 self.torch = random.choice([t for t in TORCHES if t != self.last_torch])
                 self.last_torch = self.torch
                 for p in self.players.values():
@@ -134,9 +137,16 @@ class Room:
                 while not (self.players and all(p["done"] for p in self.players.values())):
                     await asyncio.sleep(0.05)
                 self.progress = min(100, self.progress + STEP)
-                self.set_event("good", "Burn through", "The whole crew torched. Crown %d%%" % self.progress)
-                self.set_phase("result", 1.5)
-                await self.wait_phase(1.5)
+                if self.progress >= 100:
+                    self.set_event("good", "Burn through", "The whole crew torched. The vault is open.")
+                    self.set_phase("result", 1.5)
+                    await self.wait_phase(1.5)
+                    break
+                self.set_event("good", "Burn through", "Crown %d%%. Scanner coming back, freeze!" % self.progress)
+                self.set_phase("result", 1.8)
+                await self.wait_phase(1.8)
+                if not await self.scan():
+                    return
 
             self.set_phase("vault")
             await self.broadcast()
@@ -202,7 +212,7 @@ async def ws_handler(request):
             if room is None:
                 if msg.get("t") != "join":
                     continue
-                code = clean(msg.get("room", ""), 12).upper()
+                code = re.sub(r"[^a-z0-9]+", "-", str(msg.get("room", "")).lower()).strip("-")[:24]
                 if not code:
                     continue
                 room = rooms.get(code) or rooms.setdefault(code, Room(code))
