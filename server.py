@@ -9,7 +9,6 @@ from each player are relayed to the rest of the room.
 import asyncio
 import os
 import random
-import re
 import struct
 import time
 
@@ -20,8 +19,23 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 STEP = 25          # Crown % each time the whole crew completes a torch
 MAX_FLAGS = 3      # team flags before everyone is caught
 MAX_PLAYERS = 6
+MIN_PLAYERS = 2
 MAX_FRAME = 20000  # largest thermal frame (bytes) relayed between players
 TORCHES = ["tap", "flash", "jam"]
+
+# The fixed set of rooms players can pick from, each named after a painting.
+# "colors" are three tones from the painting, used for the room's swatch.
+PAINTINGS = [
+    {"id": "mona-lisa", "name": "Mona Lisa", "artist": "Leonardo da Vinci, c. 1503", "colors": ["#3d4a2c", "#a08850", "#26301f"]},
+    {"id": "starry-night", "name": "The Starry Night", "artist": "Vincent van Gogh, 1889", "colors": ["#1d3a7a", "#f2d24b", "#3d6fb5"]},
+    {"id": "persistence-of-memory", "name": "The Persistence of Memory", "artist": "Salvador Dalí, 1931", "colors": ["#c9a25a", "#3a6a8a", "#6a4a2a"]},
+    {"id": "the-scream", "name": "The Scream", "artist": "Edvard Munch, 1893", "colors": ["#e0662a", "#2a4a6a", "#d9a03a"]},
+    {"id": "pearl-earring", "name": "Girl with a Pearl Earring", "artist": "Johannes Vermeer, c. 1665", "colors": ["#1f3f7a", "#e3c56a", "#141414"]},
+    {"id": "great-wave", "name": "The Great Wave off Kanagawa", "artist": "Katsushika Hokusai, c. 1831", "colors": ["#1c3f6e", "#e9e1cc", "#6f8fa8"]},
+    {"id": "birth-of-venus", "name": "The Birth of Venus", "artist": "Sandro Botticelli, c. 1485", "colors": ["#9ec3b8", "#e8c9a8", "#c58a5a"]},
+    {"id": "night-watch", "name": "The Night Watch", "artist": "Rembrandt van Rijn, 1642", "colors": ["#2a1e12", "#c9a04a", "#5a3a1e"]},
+]
+PAINTING = {p["id"]: p for p in PAINTINGS}
 
 rooms = {}
 
@@ -67,6 +81,8 @@ class Room:
             "t": "state",
             "now": now_ms(),
             "room": self.code,
+            "roomName": PAINTING[self.code]["name"],
+            "minPlayers": MIN_PLAYERS,
             "you": me,
             "phase": self.phase,
             "start": self.start,
@@ -153,8 +169,13 @@ class Room:
         except asyncio.CancelledError:
             pass
 
+    def running(self):
+        return self.phase not in ("lobby", "caught", "vault")
+
     def start_game(self):
         if self.task and not self.task.done():
+            return
+        if len(self.players) < MIN_PLAYERS:
             return
         self.reset()
         self.task = asyncio.ensure_future(self.run())
@@ -212,12 +233,20 @@ async def ws_handler(request):
             if room is None:
                 if msg.get("t") != "join":
                     continue
-                code = re.sub(r"[^a-z0-9]+", "-", str(msg.get("room", "")).lower()).strip("-")[:24]
-                if not code:
-                    continue
+                code = str(msg.get("room", ""))
+                if code not in PAINTING:
+                    await ws.send_json({"t": "error", "text": "That room doesn't exist. Pick one from the list."})
+                    break
                 room = rooms.get(code) or rooms.setdefault(code, Room(code))
+                problem = None
                 if len(room.players) >= MAX_PLAYERS:
-                    await ws.send_json({"t": "error", "text": "This room is full (%d players)." % MAX_PLAYERS})
+                    problem = "%s is full (%d players). Pick another room." % (PAINTING[code]["name"], MAX_PLAYERS)
+                elif room.running():
+                    problem = "A heist is already under way in %s. Pick another room, or wait for it to finish." % PAINTING[code]["name"]
+                if problem:
+                    await ws.send_json({"t": "error", "text": problem})
+                    if not room.players:
+                        rooms.pop(code, None)
                     room = None
                     break
                 player = {"id": room.next_id, "name": clean(msg.get("name", ""), 20) or "Player %d" % room.next_id,
@@ -234,9 +263,31 @@ async def ws_handler(request):
                 if room.task:
                     room.task.cancel()
                 rooms.pop(room.code, None)
+            elif room.running() and len(room.players) < MIN_PLAYERS:
+                # Not enough players left to carry on: call the heist off
+                if room.task:
+                    room.task.cancel()
+                room.reset()
+                room.set_event("bad", "Heist called off",
+                               "%s left. You need at least %d players to start." % (player["name"], MIN_PLAYERS))
+                await room.broadcast()
             else:
                 await room.broadcast()
     return ws
+
+
+async def list_rooms(request):
+    out = []
+    for p in PAINTINGS:
+        room = rooms.get(p["id"])
+        count = len(room.players) if room else 0
+        status = "open"
+        if count >= MAX_PLAYERS:
+            status = "full"
+        elif room and room.running():
+            status = "playing"
+        out.append(dict(p, players=count, max=MAX_PLAYERS, status=status))
+    return web.json_response(out, headers={"Cache-Control": "no-store"})
 
 
 async def index(request):
@@ -254,6 +305,7 @@ def main():
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
+    app.router.add_get("/rooms", list_rooms)
     app.router.add_get("/clip.mp4", clip)
     web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8642)))
 

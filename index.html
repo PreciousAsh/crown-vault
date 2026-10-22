@@ -140,6 +140,24 @@ button:disabled { opacity: 0.5; cursor: default; }
   border: 1px solid var(--line); padding: 11px 12px; width: 100%;
 }
 .field .hint { font: 13px/1.4 var(--mono); color: var(--dim); }
+#intro .card { width: min(760px, 100%); }
+.rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
+.room {
+  display: grid; grid-template-columns: 34px 1fr auto; gap: 12px; align-items: center; text-align: left;
+  padding: 10px 12px; border: 1px solid var(--line); background: rgba(126,240,255,0.04); border-radius: 8px;
+}
+.room:hover:not(:disabled) { border-color: var(--beam); }
+.room[aria-checked="true"] { border-color: var(--gold); background: rgba(255,197,61,0.1); box-shadow: 0 0 0 1px var(--gold) inset; }
+.room:disabled { opacity: 0.45; cursor: not-allowed; }
+.swatch { display: grid; grid-template-rows: repeat(3, 1fr); width: 34px; height: 42px; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.15); }
+.swatch i { display: block; }
+.room .info { display: grid; gap: 2px; min-width: 0; }
+.room .info b { font-size: 17px; line-height: 1.15; }
+.room .info small { color: var(--dim); font-size: 13px; }
+.room .count { display: grid; justify-items: end; gap: 3px; font: 600 15px/1 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.room .count small { font: 600 10px/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+.room .count small.live { color: var(--beam); }
+.room .count small.busy { color: var(--alarm); }
 .roombig { font: 600 clamp(22px, 5vw, 32px)/1.2 var(--mono); color: var(--gold); overflow-wrap: anywhere; }
 .copy { display: flex; gap: 8px; }
 .copy input { font: 14px/1.2 var(--mono); }
@@ -254,9 +272,9 @@ button:disabled { opacity: 0.5; cursor: default; }
         <input id="nameInput" maxlength="20" autocomplete="nickname" placeholder="e.g. Sam">
       </div>
       <div class="field">
-        <label class="label" for="roomInput">Room name</label>
-        <input id="roomInput" maxlength="24" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. friday-heist">
-        <span class="hint" id="roomHint">Everyone who types the same room name plays together.</span>
+        <span class="label" id="roomsLabel">Pick a room</span>
+        <div class="rooms" id="rooms" role="radiogroup" aria-labelledby="roomsLabel"><span class="hint">Loading rooms…</span></div>
+        <span class="hint" id="roomHint">Pick the same room as your crew. You need at least 2 players to start.</span>
       </div>
       <div class="actions">
         <button class="primary" id="startBtn">Allow camera and join</button>
@@ -270,11 +288,11 @@ button:disabled { opacity: 0.5; cursor: default; }
     <div class="card">
       <h1>Lobby<span>Waiting for the crew</span></h1>
       <div class="field">
-        <span class="label">You're in room</span>
+        <span class="label">You're in</span>
         <div class="roombig" id="lobbyCode"></div>
       </div>
       <div class="field">
-        <label class="label" for="shareLink">Send this link, or tell your crew the room name</label>
+        <label class="label" for="shareLink">Send this link, or tell your crew which painting to pick</label>
         <div class="copy"><input id="shareLink" readonly><button id="copyBtn">Copy link</button></div>
         <div class="error" id="localWarn" hidden>This link only works on this computer. To play with someone elsewhere, put the game online first (see README.md) and share that address.</div>
       </div>
@@ -284,8 +302,9 @@ button:disabled { opacity: 0.5; cursor: default; }
       </div>
       <div class="actions">
         <button class="primary" id="beginBtn">Start the heist</button>
-        <span class="note">Anyone in the room can start. Up to 6 players.</span>
+        <span class="note" id="beginNote">Anyone in the room can start. Up to 6 players.</span>
       </div>
+      <div class="error" id="lobbyMsg" hidden></div>
     </div>
   </div>
 
@@ -408,17 +427,59 @@ const sfx = {
 };
 
 // ---- Room & connection -----------------------------------------------------
-// Room names: lowercase letters, numbers and dashes ("Friday Heist" -> "friday-heist")
-const roomSlug = text => String(text).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24);
 const params = new URLSearchParams(location.search);
-let roomCode = roomSlug(params.get('room') || '');
-if (roomCode) {
-  $('roomInput').value = roomCode;
-  $('roomHint').textContent = 'Filled in from your invite link. Keep it the same to join your crew.';
-} else {
-  const words = ['vault', 'crown', 'ghost', 'ember', 'frost', 'neon', 'cobalt', 'nightshift'];
-  $('roomInput').value = `${words[Math.floor(Math.random() * words.length)]}-${100 + Math.floor(Math.random() * 900)}`;
+let roomCode = params.get('room') || '';
+let ROOMS = [];
+
+function roomStatus(r) {
+  if (r.status === 'full') return ['Full', 'busy'];
+  if (r.status === 'playing') return ['Heist under way', 'busy'];
+  if (r.players === 0) return ['Empty', ''];
+  if (r.players === 1) return ['Needs 1 more', 'live'];
+  return ['Ready to start', 'live'];
 }
+
+function renderRooms() {
+  const box = $('rooms');
+  const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.room : null;
+  box.textContent = '';
+  for (const r of ROOMS) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'room'; b.dataset.room = r.id;
+    b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', String(r.id === roomCode));
+    b.disabled = r.status !== 'open';
+    const sw = document.createElement('span'); sw.className = 'swatch';
+    for (const c of r.colors) { const i = document.createElement('i'); i.style.background = c; sw.append(i); }
+    const info = document.createElement('span'); info.className = 'info';
+    const nm = document.createElement('b'); nm.textContent = r.name;
+    const ar = document.createElement('small'); ar.textContent = r.artist;
+    info.append(nm, ar);
+    const count = document.createElement('span'); count.className = 'count';
+    const [label, cls] = roomStatus(r);
+    const st = document.createElement('small'); st.textContent = label; if (cls) st.className = cls;
+    count.append(`${r.players} / ${r.max}`, st);
+    b.setAttribute('aria-label', `${r.name}, ${r.players} of ${r.max} players, ${label}`);
+    b.append(sw, info, count);
+    b.onclick = () => { roomCode = r.id; renderRooms(); $('err').hidden = true; };
+    box.append(b);
+    if (focused === r.id) b.focus({ preventScroll: true });
+  }
+}
+
+async function loadRooms() {
+  if ($('intro').hidden) return;
+  try {
+    const res = await fetch('/rooms', { cache: 'no-store' });
+    ROOMS = await res.json();
+    renderRooms();
+  } catch (e) {
+    if (!ROOMS.length) $('rooms').textContent = 'Could not load the rooms. Check your connection and reload the page.';
+  }
+}
+loadRooms();
+setInterval(loadRooms, 3000);
+if (roomCode) $('roomHint').textContent = 'Your invite link picked a room for you. Keep it selected to join your crew.';
+
 try { $('nameInput').value = localStorage.getItem('crownName') || ''; } catch (e) {}
 
 let ws = null, G = null, offset = 0;       // G = latest server state
@@ -430,16 +491,16 @@ function connect(name) {
   return new Promise((resolve, reject) => {
     ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
     ws.binaryType = 'arraybuffer';
-    let opened = false;
-    ws.onopen = () => { opened = true; send({ t: 'join', room: roomCode, name }); resolve(); };
+    let joined = false, problem = null;
+    ws.onopen = () => send({ t: 'join', room: roomCode, name });
     ws.onmessage = e => {
       if (e.data instanceof ArrayBuffer) { onFrame(e.data); return; }
       const msg = JSON.parse(e.data);
-      if (msg.t === 'state') onState(msg);
-      if (msg.t === 'error') { $('lostText').textContent = msg.text; }
+      if (msg.t === 'state') { if (!joined) { joined = true; resolve(); } onState(msg); }
+      if (msg.t === 'error') problem = msg.text;
     };
     ws.onclose = () => {
-      if (!opened) { reject(new Error('server')); return; }
+      if (!joined) { reject(new Error(problem || 'Could not reach the game server. Check your connection and try again.')); return; }
       humOff(); showOnly('lost');
     };
   });
@@ -480,7 +541,7 @@ function onPhase(before, s) {
   $('torch').hidden = s.phase !== 'torch';
   requestAnimationFrame(layoutGrid);
   switch (s.phase) {
-    case 'lobby': showOnly('lobby'); break;
+    case 'lobby': showOnly('lobby'); $('lobbyMsg').hidden = true; break;
     case 'caught':
       $('caughtText').textContent = `The scanner picked up the crew three times. You reached ${s.progress}% on the Crown bar.`;
       showOnly('caught'); break;
@@ -502,6 +563,7 @@ function onPhase(before, s) {
 
 function onEvent(ev) {
   L.eventId = ev.id; L.eventAt = performance.now();
+  if (G.phase === 'lobby') { $('lobbyMsg').textContent = `${ev.title}. ${ev.text}`; $('lobbyMsg').hidden = false; }
   say(ev.title, ev.kind, ev.text);
   if (ev.kind === 'bad' && ev.title === 'Flagged') {
     sfx.alarm();
@@ -521,8 +583,17 @@ function say(text, cls = '', sub = '') {
 function me() { return G && G.players.find(p => p.id === G.you); }
 
 function renderLobby() {
-  $('lobbyCode').textContent = G.room;
-  $('roomName').textContent = `${G.room} · ${G.players.length} ${G.players.length === 1 ? 'player' : 'players'}`;
+  $('lobbyCode').textContent = G.roomName;
+  $('roomName').textContent = `${G.roomName} · ${G.players.length} ${G.players.length === 1 ? 'player' : 'players'}`;
+  const short = G.minPlayers - G.players.length;
+  $('beginBtn').disabled = short > 0;
+  $('beginNote').textContent = short > 0
+    ? `Waiting for ${short} more ${short === 1 ? 'player' : 'players'}. You need at least ${G.minPlayers} to start.`
+    : 'Anyone in the room can start. Up to 6 players.';
+  for (const id of ['retryBtn', 'againBtn']) {
+    $(id).disabled = short > 0;
+    $(id).title = short > 0 ? `You need at least ${G.minPlayers} players` : '';
+  }
   $('shareLink').value = `${location.origin}${location.pathname}?room=${encodeURIComponent(G.room)}`;
   $('localWarn').hidden = !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
   const roster = $('roster'); roster.textContent = '';
@@ -778,9 +849,7 @@ async function start() {
   const err = $('err'); err.hidden = true;
   const name = $('nameInput').value.trim();
   if (!name) { err.textContent = 'Enter a name so your crew knows who you are.'; err.hidden = false; $('nameInput').focus(); return; }
-  roomCode = roomSlug($('roomInput').value);
-  if (!roomCode) { err.textContent = 'Enter a room name. Use letters or numbers, and share it with your crew.'; err.hidden = false; $('roomInput').focus(); return; }
-  $('roomInput').value = roomCode;
+  if (!ROOMS.some(r => r.id === roomCode)) { err.textContent = 'Pick a room to join.'; err.hidden = false; return; }
   try { localStorage.setItem('crownName', name); } catch (e) {}
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
     err.textContent = 'This browser blocks the camera on this address. Open the game from an https:// address.';
@@ -800,11 +869,12 @@ async function start() {
     err.hidden = false; $('startBtn').disabled = false; return;
   }
   try {
-    history.replaceState(null, '', `?room=${encodeURIComponent(roomCode)}`);
     await connect(name);
+    history.replaceState(null, '', `?room=${encodeURIComponent(roomCode)}`);
   } catch (e) {
-    err.textContent = 'Could not reach the game server. Check your connection and try again.';
+    err.textContent = e.message;
     err.hidden = false; $('startBtn').disabled = false;
+    loadRooms();
   }
 }
 
@@ -815,7 +885,6 @@ function tap() {
 
 $('startBtn').onclick = start;
 $('nameInput').addEventListener('keydown', e => { if (e.key === 'Enter') start(); });
-$('roomInput').addEventListener('keydown', e => { if (e.key === 'Enter') start(); });
 $('beginBtn').onclick = () => send({ t: 'start' });
 $('retryBtn').onclick = () => send({ t: 'start' });
 $('againBtn').onclick = () => { $('clip').pause(); send({ t: 'start' }); };
