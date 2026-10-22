@@ -3,23 +3,23 @@
 Serves the game page and runs one shared game per room over WebSockets.
 The server owns the clock and the shared state (phase timing, Crown bar,
 team flags). Each player's browser does its own camera work and reports
-flags, torch progress and motion level back here.
+flags, torch progress and motion level back here. Small thermal frames
+from each player are relayed to the rest of the room.
 """
 import asyncio
 import os
 import random
+import struct
 import time
 
 from aiohttp import WSMsgType, web
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
-STEP_ALL = 25      # Crown % when every player completes the torch
-STEP_SOME = 10     # Crown % when only some players complete it
-FLAG_COST = 10     # Crown % lost per flag
+STEP = 25          # Crown % each time the whole crew completes a torch
 MAX_FLAGS = 3      # team flags before everyone is caught
 MAX_PLAYERS = 6
-TORCH_TIME = 5.0
+MAX_FRAME = 20000  # largest thermal frame (bytes) relayed between players
 TORCHES = ["tap", "flash", "jam"]
 
 rooms = {}
@@ -44,7 +44,6 @@ class Room:
         self.end = None
         self.progress = 0
         self.strikes = 0
-        self.wins = 0
         self.torch = None
         self.last_torch = None
         self.beam_dir = 1
@@ -99,14 +98,14 @@ class Room:
         try:
             self.set_phase("calib", 2.5)
             await self.wait_phase(2.5)
+
+            # Opening scan: repeat until nobody moves, or the crew runs out of flags.
             while True:
                 for p in self.players.values():
                     p["flagged"] = False
                 self.event = None
                 self.set_phase("warn", 1.2)
                 await self.wait_phase(1.2)
-
-                self.beam_dur = max(1.7, 3.4 - self.wins * 0.4)
                 self.set_phase("sweep", self.beam_dur)
                 await self.wait_phase(self.beam_dur)
                 self.beam_dir *= -1
@@ -114,33 +113,33 @@ class Room:
                     self.set_phase("caught")
                     await self.broadcast()
                     return
+                if not any(p["flagged"] for p in self.players.values()):
+                    break
+                self.set_event("bad", "Rescan", "Someone moved. The whole crew gets scanned again.")
+                self.set_phase("result", 2)
+                await self.wait_phase(2)
 
+            self.set_event("good", "Scan clear", "Nobody moved. Time to torch the vault.")
+            self.set_phase("result", 2)
+            await self.wait_phase(2)
+
+            # Torch rounds: each one waits until every player has completed it.
+            while self.progress < 100:
                 self.torch = random.choice([t for t in TORCHES if t != self.last_torch])
                 self.last_torch = self.torch
                 for p in self.players.values():
                     p.update(torch=0, done=False)
-                self.set_phase("torch", TORCH_TIME)
+                self.set_phase("torch")
                 await self.broadcast()
-                while now_ms() < self.end and not all(p["done"] for p in self.players.values()):
+                while not (self.players and all(p["done"] for p in self.players.values())):
                     await asyncio.sleep(0.05)
-
-                total = len(self.players)
-                done = sum(1 for p in self.players.values() if p["done"])
-                if total and done == total:
-                    self.progress = min(100, self.progress + STEP_ALL)
-                    self.wins += 1
-                    self.set_event("good", "Burn through", "Everyone torched. Crown +%d%%" % STEP_ALL)
-                elif done:
-                    self.progress = min(100, self.progress + STEP_SOME)
-                    self.set_event("good", "Partial burn", "%d of %d torched. Crown +%d%%" % (done, total, STEP_SOME))
-                else:
-                    self.set_event("bad", "Torch fizzled", "Nobody finished in time")
+                self.progress = min(100, self.progress + STEP)
+                self.set_event("good", "Burn through", "The whole crew torched. Crown %d%%" % self.progress)
                 self.set_phase("result", 1.5)
                 await self.wait_phase(1.5)
-                if self.progress >= 100:
-                    self.set_phase("vault")
-                    await self.broadcast()
-                    return
+
+            self.set_phase("vault")
+            await self.broadcast()
         except asyncio.CancelledError:
             pass
 
@@ -160,8 +159,7 @@ class Room:
         elif kind == "flag" and self.phase == "sweep" and not player["flagged"]:
             player["flagged"] = True
             self.strikes += 1
-            self.progress = max(0, self.progress - FLAG_COST)
-            self.set_event("bad", "Flagged", "%s moved under the beam. Crown −%d%%" % (player["name"], FLAG_COST))
+            self.set_event("bad", "Flagged", "%s moved under the beam. Team flag %d of %d" % (player["name"], self.strikes, MAX_FLAGS))
             await self.broadcast()
         elif kind == "torch" and self.phase == "torch" and not player["done"]:
             v = min(1.0, max(0.0, float(msg.get("v", 0))))
@@ -184,6 +182,17 @@ async def ws_handler(request):
     room = player = None
     try:
         async for raw in ws:
+            if raw.type == WSMsgType.BINARY:
+                # A thermal frame: pass it on to everyone else, tagged with the sender's id
+                if room is not None and len(raw.data) <= MAX_FRAME:
+                    packet = struct.pack(">I", player["id"]) + raw.data
+                    for other in list(room.players):
+                        if other is not ws and not other.closed:
+                            try:
+                                await other.send_bytes(packet)
+                            except Exception:
+                                pass
+                continue
             if raw.type != WSMsgType.TEXT:
                 continue
             try:
