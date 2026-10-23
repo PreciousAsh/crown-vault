@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Stencil+One&family=Barlow+Semi+Condensed:wght@400;600&family=IBM+Plex+Mono:wght@400;600&display=swap">
 <style>
-/* Layout: full-bleed thermal feed; HUD pinned to the corners; one centred prompt; team list bottom-left, torch panel bottom-right. */
+/* Layout: video-call grid of thermal tiles (you first); status bar on top; prompt floats over the grid; torch panel docks at the bottom. */
 :root {
   color-scheme: dark;
   --void: #05060b;
@@ -36,13 +36,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--beam); outl
 button:disabled { opacity: 0.5; cursor: default; }
 
 .stage { position: fixed; inset: 0; }
-#view { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.scan {
-  position: absolute; inset: 0; pointer-events: none;
-  background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.22) 2px 3px);
-  mix-blend-mode: multiply;
-}
-.vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.65)); }
 .flash { position: absolute; inset: 0; pointer-events: none; background: var(--alarm); opacity: 0; transition: opacity 0.5s ease-out; }
 .flash.on { opacity: 0.42; transition: none; }
 
@@ -69,9 +62,14 @@ button:disabled { opacity: 0.5; cursor: default; }
 .icon-btn { background: var(--panel); border: 1px solid var(--line); width: 38px; height: 38px; display: grid; place-items: center; }
 .icon-btn svg { width: 18px; height: 18px; }
 
-.center { display: grid; place-items: center; text-align: center; align-content: center; gap: 6px; }
+.roomtag { display: grid; gap: 7px; justify-items: center; text-align: center; min-width: 0; }
+.roomtag b { font: 600 15px/1 var(--mono); color: var(--beam); max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.center {
+  position: absolute; inset: 0; display: grid; place-items: center; text-align: center; align-content: center; gap: 6px;
+  padding: 0 24px; pointer-events: none; z-index: 3;
+}
 #prompt {
-  font: clamp(34px, 7vw, 76px)/0.95 var(--display); letter-spacing: 0.04em; margin: 0;
+  font: clamp(32px, 6vw, 68px)/0.95 var(--display); letter-spacing: 0.04em; margin: 0;
   text-shadow: 0 0 24px rgba(0,0,0,0.9), 0 0 2px #000; text-wrap: balance;
 }
 #prompt.warn { color: var(--beam); }
@@ -79,22 +77,38 @@ button:disabled { opacity: 0.5; cursor: default; }
 #prompt.good { color: var(--gold); }
 #sub { font: 600 15px/1.3 var(--mono); color: var(--text); text-shadow: 0 0 8px #000; max-width: 34ch; }
 
-.bottom { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
-.team { display: grid; gap: 8px; width: min(260px, 100%); background: var(--panel); border: 1px solid var(--line); padding: 10px 12px; }
-.member { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; }
-.member .who { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.member .who small { color: var(--dim); font-weight: 400; }
-.chip { font: 600 10px/1 var(--mono); letter-spacing: 0.1em; padding: 4px 6px; border: 1px solid var(--line); color: var(--beam); font-variant-numeric: tabular-nums; }
+.bottom { display: flex; justify-content: center; }
+.grid {
+  min-height: 0; display: flex; flex-wrap: wrap; justify-content: center; align-content: center; gap: 12px;
+}
+.tile {
+  position: relative; width: var(--tile-w, 320px); aspect-ratio: 4 / 3; max-width: 100%;
+  border-radius: 10px; overflow: hidden; background: #02020f; border: 2px solid rgba(126,240,255,0.12);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.tile canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.tile::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.55)),
+    repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.2) 2px 3px);
+}
+.tile .tag { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; justify-content: space-between; align-items: center; gap: 6px; z-index: 1; }
+.tile .who {
+  font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: rgba(5,6,11,0.78); padding: 4px 9px; border-radius: 6px;
+}
+.tile .who small { color: var(--dim); font-weight: 400; }
+.tile .wait { position: absolute; inset: 0; display: grid; place-items: center; font: 600 11px/1 var(--mono); letter-spacing: 0.1em; color: var(--dim); }
+.tile.bad { border-color: var(--alarm); box-shadow: 0 0 18px rgba(255,48,72,0.5); }
+.tile.good { border-color: var(--gold); box-shadow: 0 0 18px rgba(255,197,61,0.45); }
+.chip { font: 600 10px/1 var(--mono); letter-spacing: 0.1em; padding: 5px 7px; border-radius: 6px; border: 1px solid var(--line); color: var(--beam); background: rgba(5,6,11,0.78); font-variant-numeric: tabular-nums; flex: none; }
 .chip.bad { color: var(--alarm); border-color: var(--alarm); }
 .chip.good { color: var(--gold); border-color: var(--gold); }
-.member .bar { grid-column: 1 / -1; height: 4px; border-color: var(--line); background: rgba(126,240,255,0.06); }
-.member .bar i { background: var(--beam); box-shadow: none; transition: width 0.15s linear; }
-.member .bar i.hot { background: var(--alarm); }
-.member .bar i.gold { background: var(--gold); }
 
 .torch {
   pointer-events: auto; background: var(--panel); border: 1px solid rgba(255,197,61,0.45);
-  padding: 14px 16px; width: min(440px, 100%); display: grid; gap: 10px; margin-left: auto;
+  padding: 14px 16px; width: min(480px, 100%); display: grid; gap: 10px;
   backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
 }
 .torch h2 { margin: 0; font: 26px/1 var(--display); color: var(--gold); letter-spacing: 0.05em; }
@@ -125,6 +139,26 @@ button:disabled { opacity: 0.5; cursor: default; }
   font: 600 18px/1.2 var(--body); color: var(--text); background: rgba(126,240,255,0.06);
   border: 1px solid var(--line); padding: 11px 12px; width: 100%;
 }
+.field .hint { font: 13px/1.4 var(--mono); color: var(--dim); }
+#intro .card { width: min(760px, 100%); }
+.rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
+.room {
+  display: grid; grid-template-columns: 34px 1fr auto; gap: 12px; align-items: center; text-align: left;
+  padding: 10px 12px; border: 1px solid var(--line); background: rgba(126,240,255,0.04); border-radius: 8px;
+}
+.room:hover:not(:disabled) { border-color: var(--beam); }
+.room[aria-checked="true"] { border-color: var(--gold); background: rgba(255,197,61,0.1); box-shadow: 0 0 0 1px var(--gold) inset; }
+.room:disabled { opacity: 0.45; cursor: not-allowed; }
+.swatch { display: grid; grid-template-rows: repeat(3, 1fr); width: 34px; height: 42px; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.15); }
+.swatch i { display: block; }
+.room .info { display: grid; gap: 2px; min-width: 0; }
+.room .info b { font-size: 17px; line-height: 1.15; }
+.room .info small { color: var(--dim); font-size: 13px; }
+.room .count { display: grid; justify-items: end; gap: 3px; font: 600 15px/1 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.room .count small { font: 600 10px/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+.room .count small.live { color: var(--beam); }
+.room .count small.busy { color: var(--alarm); }
+.roombig { font: 600 clamp(22px, 5vw, 32px)/1.2 var(--mono); color: var(--gold); overflow-wrap: anywhere; }
 .copy { display: flex; gap: 8px; }
 .copy input { font: 14px/1.2 var(--mono); }
 .copy button { border: 1px solid var(--beam); background: transparent; color: var(--beam); padding: 0 16px; font-weight: 600; white-space: nowrap; }
@@ -160,21 +194,25 @@ button:disabled { opacity: 0.5; cursor: default; }
 .empty-clip { display: grid; gap: 8px; place-items: center; }
 .empty-clip h2 { margin: 0; font: clamp(44px, 9vw, 88px)/0.95 var(--display); color: var(--gold); }
 
+.reconnect {
+  position: absolute; z-index: 20; left: 50%; transform: translateX(-50%);
+  top: calc(70px + env(safe-area-inset-top, 0px)); padding: 10px 16px; border-radius: 8px;
+  background: rgba(7,9,20,0.92); border: 1px solid var(--gold); color: var(--gold);
+  font: 600 14px/1.3 var(--mono); box-shadow: 0 0 20px rgba(255,197,61,0.3); max-width: calc(100% - 32px); text-align: center;
+}
 [hidden] { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .door, .bar i { transition: none; }
 }
 @media (max-width: 520px) {
   .rules li { grid-template-columns: 1fr; gap: 2px; }
-  .team { width: 100%; }
+  .roomtag { order: 3; width: 100%; justify-items: start; text-align: left; grid-auto-flow: column; justify-content: start; align-items: baseline; gap: 8px; }
+  .grid { gap: 8px; }
 }
 </style>
 </head>
 <body>
 <div class="stage">
-  <canvas id="view"></canvas>
-  <div class="scan"></div>
-  <div class="vignette"></div>
   <div class="flash" id="flash"></div>
 
   <div class="hud" id="hud" hidden>
@@ -189,6 +227,10 @@ button:disabled { opacity: 0.5; cursor: default; }
         </div>
         <div class="bar"><i id="crownFill"></i><span class="ticks"></span></div>
       </div>
+      <div class="roomtag">
+        <span class="label">Room</span>
+        <b id="roomName"></b>
+      </div>
       <div class="right">
         <div class="flags">
           <span class="label">Team flags</span>
@@ -200,15 +242,21 @@ button:disabled { opacity: 0.5; cursor: default; }
       </div>
     </div>
 
+    <div class="grid" id="grid" aria-label="Your crew">
+      <div class="tile me" id="meTile">
+        <canvas id="view"></canvas>
+        <div class="tag"><span class="who" id="meWho">You</span><span class="chip" id="meChip">READY</span></div>
+      </div>
+    </div>
+
     <div class="center">
       <p id="prompt"></p>
       <div id="sub"></div>
     </div>
 
     <div class="bottom">
-      <div class="team" id="team" aria-live="polite"></div>
       <div class="torch" id="torch" hidden>
-        <div class="row"><h2 id="torchTitle">Torch</h2><span class="time" id="torchTime">5.0s</span></div>
+        <div class="row"><h2 id="torchTitle">Torch</h2><span class="time" id="torchTime"></span></div>
         <p id="torchText"></p>
         <div class="bar"><i id="torchFill"></i></div>
         <button id="tapBtn" hidden>TORCH</button>
@@ -219,30 +267,38 @@ button:disabled { opacity: 0.5; cursor: default; }
   <div class="overlay" id="intro">
     <div class="card">
       <h1>Crown Vault<span>Co-op thermal heist</span></h1>
-      <p>The vault is guarded by a thermal scanner. Your crew shares one Crown bar. Stay frozen while it sweeps, and light your torches in the gaps to cut through.</p>
+      <p>The vault is guarded by a thermal scanner. Get the whole crew past it without moving, then burn through the door together.</p>
       <ul class="rules">
-        <li><b>FREEZE</b><span>When the blue beam passes, don't move. One twitch from anyone flags the whole team.</span></li>
-        <li><b>TORCH</b><span>Between sweeps, everyone does the action on screen: tap fast, flash a phone screen at the camera, or wave to jam it.</span></li>
-        <li><b>CROWN</b><span>All of you torch: +25%. Only some: +10%. Fill the bar to open the vault. Three team flags and you're all caught.</span></li>
+        <li><b>FREEZE</b><span>The beam scans the crew at the start and after every challenge. If anyone moves, everyone gets rescanned. Three team flags and you're all caught.</span></li>
+        <li><b>TORCH</b><span>Between scans, take on torch challenges together: tap fast, flash a phone screen at the camera, or wave to jam it. Nobody moves on until everyone has done it.</span></li>
+        <li><b>CROWN</b><span>Each challenge the whole crew clears fills a quarter of the Crown bar. Fill it to open the vault.</span></li>
       </ul>
       <div class="field">
         <label class="label" for="nameInput">Your name</label>
         <input id="nameInput" maxlength="20" autocomplete="nickname" placeholder="e.g. Sam">
       </div>
+      <div class="field">
+        <span class="label" id="roomsLabel">Pick a room</span>
+        <div class="rooms" id="rooms" role="radiogroup" aria-labelledby="roomsLabel"><span class="hint">Loading rooms…</span></div>
+        <span class="hint" id="roomHint">Pick the same room as your crew. You need at least 2 players to start.</span>
+      </div>
       <div class="actions">
         <button class="primary" id="startBtn">Allow camera and join</button>
-        <span class="note" id="roomNote"></span>
       </div>
       <div class="error" id="err" hidden></div>
-      <div class="note">Your video stays on your device. Only your name, motion level and torch progress are sent to the other players.</div>
+      <div class="note">Your crew sees your thermal image, name and progress. Your normal camera video never leaves your device, and nothing is recorded.</div>
     </div>
   </div>
 
   <div class="overlay" id="lobby" hidden>
     <div class="card">
-      <h1>Room <em id="lobbyCode" style="font-style:normal"></em><span>Waiting for the crew</span></h1>
+      <h1>Lobby<span>Waiting for the crew</span></h1>
       <div class="field">
-        <label class="label" for="shareLink">Send this link to your crew</label>
+        <span class="label">You're in</span>
+        <div class="roombig" id="lobbyCode"></div>
+      </div>
+      <div class="field">
+        <label class="label" for="shareLink">Send this link, or tell your crew which painting to pick</label>
         <div class="copy"><input id="shareLink" readonly><button id="copyBtn">Copy link</button></div>
         <div class="error" id="localWarn" hidden>This link only works on this computer. To play with someone elsewhere, put the game online first (see README.md) and share that address.</div>
       </div>
@@ -252,8 +308,9 @@ button:disabled { opacity: 0.5; cursor: default; }
       </div>
       <div class="actions">
         <button class="primary" id="beginBtn">Start the heist</button>
-        <span class="note">Anyone in the room can start. Up to 6 players.</span>
+        <span class="note" id="beginNote">Anyone in the room can start. Up to 6 players.</span>
       </div>
+      <div class="error" id="lobbyMsg" hidden></div>
     </div>
   </div>
 
@@ -268,10 +325,13 @@ button:disabled { opacity: 0.5; cursor: default; }
     </div>
   </div>
 
+  <div class="reconnect" id="reconnect" role="status" hidden><span id="reconnectText"></span></div>
+
   <div class="overlay" id="lost" hidden>
     <div class="card">
       <h1 style="color:var(--alarm)">Signal lost<span>Disconnected</span></h1>
       <p id="lostText">The connection to the game server dropped.</p>
+      <p class="note">If this keeps happening, check that you're on the latest version of the page: reload it once.</p>
       <div class="actions"><button class="primary" id="reloadBtn">Rejoin</button></div>
     </div>
   </div>
@@ -309,6 +369,11 @@ const pctx = proc.getContext('2d', { willReadFrequently: true });
 const therm = document.createElement('canvas'); therm.width = W; therm.height = H;
 const tctx = therm.getContext('2d');
 const out = tctx.createImageData(W, H);
+const cold = document.createElement('canvas'); cold.width = W; cold.height = H;
+const cctx = cold.getContext('2d');
+const coldOut = cctx.createImageData(W, H);
+const share = document.createElement('canvas'); share.width = W; share.height = H;   // what this player looks like, scan included
+const sctx = share.getContext('2d');
 
 const lum = new Float32Array(N), prev = new Float32Array(N), heat = new Float32Array(N), base = new Float32Array(N);
 let primed = false, lo = 40, hi = 200;
@@ -318,6 +383,19 @@ let map = { dx: 0, scale: 1 };
 // Ironbow thermal palette
 const LUT = (() => {
   const stops = [[0, [2, 2, 18]], [0.22, [36, 4, 120]], [0.42, [150, 0, 140]], [0.6, [232, 50, 30]], [0.78, [255, 150, 10]], [0.92, [255, 232, 110]], [1, [255, 255, 255]]];
+  const lut = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255; let k = 0;
+    while (k < stops.length - 2 && t > stops[k + 1][0]) k++;
+    const [t0, c0] = stops[k], [t1, c1] = stops[k + 1], f = (t - t0) / (t1 - t0);
+    for (let c = 0; c < 3; c++) lut[i * 3 + c] = c0[c] + (c1[c] - c0[c]) * f;
+  }
+  return lut;
+})();
+
+// Ice palette for whatever the beam has already scanned
+const ICE = (() => {
+  const stops = [[0, [2, 6, 24]], [0.35, [10, 50, 120]], [0.65, [40, 150, 220]], [0.85, [140, 230, 255]], [1, [240, 252, 255]]];
   const lut = new Uint8Array(256 * 3);
   for (let i = 0; i < 256; i++) {
     const t = i / 255; let k = 0;
@@ -359,13 +437,58 @@ const sfx = {
 
 // ---- Room & connection -----------------------------------------------------
 const params = new URLSearchParams(location.search);
-let roomCode = (params.get('room') || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12);
-const joining = !!roomCode;
-if (!roomCode) {
-  const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  roomCode = Array.from({ length: 5 }, () => letters[Math.floor(Math.random() * letters.length)]).join('');
+let roomCode = params.get('room') || '';
+let ROOMS = [];
+
+function roomStatus(r) {
+  if (r.status === 'full') return ['Full', 'busy'];
+  if (r.status === 'playing') return ['Heist under way', 'busy'];
+  if (r.players === 0) return ['Empty', ''];
+  if (r.players === 1) return ['Needs 1 more', 'live'];
+  return ['Ready to start', 'live'];
 }
-$('roomNote').textContent = joining ? `Joining room ${roomCode}` : `You'll get a room link to share`;
+
+function renderRooms() {
+  const box = $('rooms');
+  const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.room : null;
+  box.textContent = '';
+  for (const r of ROOMS) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'room'; b.dataset.room = r.id;
+    b.setAttribute('role', 'radio'); b.setAttribute('aria-checked', String(r.id === roomCode));
+    b.disabled = r.status !== 'open';
+    const sw = document.createElement('span'); sw.className = 'swatch';
+    for (const c of r.colors) { const i = document.createElement('i'); i.style.background = c; sw.append(i); }
+    const info = document.createElement('span'); info.className = 'info';
+    const nm = document.createElement('b'); nm.textContent = r.name;
+    const ar = document.createElement('small'); ar.textContent = r.artist;
+    info.append(nm, ar);
+    const count = document.createElement('span'); count.className = 'count';
+    const [label, cls] = roomStatus(r);
+    const st = document.createElement('small'); st.textContent = label; if (cls) st.className = cls;
+    count.append(`${r.players} / ${r.max}`, st);
+    b.setAttribute('aria-label', `${r.name}, ${r.players} of ${r.max} players, ${label}`);
+    b.append(sw, info, count);
+    b.onclick = () => { roomCode = r.id; renderRooms(); $('err').hidden = true; };
+    box.append(b);
+    if (focused === r.id) b.focus({ preventScroll: true });
+  }
+}
+
+async function loadRooms() {
+  if ($('intro').hidden) return;
+  try {
+    const res = await fetch('/rooms', { cache: 'no-store' });
+    ROOMS = await res.json();
+    renderRooms();
+  } catch (e) {
+    if (!ROOMS.length) $('rooms').textContent = 'Could not load the rooms. Check your connection and reload the page.';
+  }
+}
+loadRooms();
+setInterval(loadRooms, 3000);
+if (roomCode) $('roomHint').textContent = 'Your invite link picked a room for you. Keep it selected to join your crew.';
+
 try { $('nameInput').value = localStorage.getItem('crownName') || ''; } catch (e) {}
 
 let ws = null, G = null, offset = 0;       // G = latest server state
@@ -373,21 +496,65 @@ const serverNow = () => Date.now() + offset;
 const elapsed = () => G ? (serverNow() - G.start) / 1000 : 0;
 function send(msg) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); }
 
-function connect(name) {
+// One id per browser tab, so the server can give a dropped player their place back
+const TOKEN = (() => {
+  const fresh = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+  try {
+    let t = sessionStorage.getItem('crownToken');
+    if (!t) { t = fresh(); sessionStorage.setItem('crownToken', t); }
+    return t;
+  } catch (e) { return fresh(); }
+})();
+let joinName = '', retry = 0, lastClose = '';
+
+// Open a socket and join the room; resolves once the server sends the room state
+function connect() {
   return new Promise((resolve, reject) => {
-    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-    let opened = false;
-    ws.onopen = () => { opened = true; send({ t: 'join', room: roomCode, name }); resolve(); };
-    ws.onmessage = e => {
+    const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+    sock.binaryType = 'arraybuffer';
+    let joined = false, problem = null;
+    sock.onopen = () => sock.send(JSON.stringify({ t: 'join', room: roomCode, name: joinName, token: TOKEN }));
+    sock.onmessage = e => {
+      if (e.data instanceof ArrayBuffer) { onFrame(e.data); return; }
       const msg = JSON.parse(e.data);
-      if (msg.t === 'state') onState(msg);
-      if (msg.t === 'error') { $('lostText').textContent = msg.text; }
+      if (msg.t === 'state') { if (!joined) { joined = true; ws = sock; resolve(); } onState(msg); }
+      if (msg.t === 'error') problem = msg.text;
     };
-    ws.onclose = () => {
-      if (!opened) { reject(new Error('server')); return; }
-      humOff(); showOnly('lost');
+    sock.onclose = e => {
+      if (!joined) {
+        const err = new Error(problem || 'Could not reach the game server. Check your connection and try again.');
+        err.fatal = !!problem;
+        reject(err); return;
+      }
+      if (sock === ws) onDrop(e);
     };
   });
+}
+
+function onDrop(e) {
+  humOff();
+  lastClose = `code ${e.code}${e.reason ? ': ' + e.reason : ''}`;
+  retry = 0;
+  $('reconnect').hidden = false;
+  reconnect();
+}
+
+async function reconnect() {
+  retry++;
+  $('reconnectText').textContent = `Connection dropped. Reconnecting (try ${retry} of 8)…`;
+  try {
+    await connect();
+    $('reconnect').hidden = true;
+  } catch (err) {
+    if (err.fatal || retry >= 8) {
+      $('reconnect').hidden = true;
+      $('lostText').textContent = err.fatal ? err.message
+        : `The game couldn't reconnect to the server (${lastClose}). Check your internet connection, then press Rejoin.`;
+      showOnly('lost');
+      return;
+    }
+    setTimeout(reconnect, Math.min(4000, 500 * 2 ** retry));
+  }
 }
 
 // ---- Local per-player state ------------------------------------------------
@@ -412,7 +579,7 @@ function onState(s) {
   G = s;
   if (!before || before.phase !== s.phase || before.start !== s.start) onPhase(before, s);
   if (s.event && s.event.id !== L.eventId) onEvent(s.event);
-  renderTeam();
+  renderTiles();
   renderLobby();
   $('crownFill').style.width = s.progress + '%';
   $('pct').textContent = s.progress + '%';
@@ -423,8 +590,9 @@ function onPhase(before, s) {
   if (before && before.phase === 'sweep') humOff();
   if (before && before.phase === 'calib') L.noise = L.noiseN ? L.noise / L.noiseN : 0.01;
   $('torch').hidden = s.phase !== 'torch';
+  requestAnimationFrame(layoutGrid);
   switch (s.phase) {
-    case 'lobby': showOnly('lobby'); break;
+    case 'lobby': showOnly('lobby'); $('lobbyMsg').hidden = true; break;
     case 'caught':
       $('caughtText').textContent = `The scanner picked up the crew three times. You reached ${s.progress}% on the Crown bar.`;
       showOnly('caught'); break;
@@ -446,6 +614,7 @@ function onPhase(before, s) {
 
 function onEvent(ev) {
   L.eventId = ev.id; L.eventAt = performance.now();
+  if (G.phase === 'lobby') { $('lobbyMsg').textContent = `${ev.title}. ${ev.text}`; $('lobbyMsg').hidden = false; }
   say(ev.title, ev.kind, ev.text);
   if (ev.kind === 'bad' && ev.title === 'Flagged') {
     sfx.alarm();
@@ -464,41 +633,25 @@ function say(text, cls = '', sub = '') {
 
 function me() { return G && G.players.find(p => p.id === G.you); }
 
-function renderTeam() {
-  const team = $('team'); team.textContent = '';
-  const head = document.createElement('span'); head.className = 'label'; head.textContent = 'Crew'; team.append(head);
-  for (const p of G.players) {
-    const row = document.createElement('div'); row.className = 'member';
-    const who = document.createElement('span'); who.className = 'who'; who.textContent = p.name + ' ';
-    if (p.id === G.you) { const y = document.createElement('small'); y.textContent = '(you)'; who.append(y); }
-    const chip = document.createElement('span'); chip.className = 'chip';
-    const bar = document.createElement('div'); bar.className = 'bar';
-    const fill = document.createElement('i'); bar.append(fill);
-    if (p.flagged && (G.phase === 'sweep' || G.phase === 'warn')) { chip.textContent = 'FLAGGED'; chip.classList.add('bad'); }
-    else if (G.phase === 'torch') {
-      chip.textContent = p.done ? 'TORCHED' : Math.round(p.torch * 100) + '%';
-      if (p.done) chip.classList.add('good');
-      fill.style.width = p.torch * 100 + '%'; fill.className = 'gold';
-    } else {
-      chip.textContent = G.phase === 'sweep' ? (p.motion >= 1 ? 'MOVING' : 'STILL') : 'READY';
-      if (p.motion >= 1) chip.classList.add('bad');
-      fill.style.width = Math.min(100, p.motion * 100) + '%';
-      if (p.motion >= 1) fill.className = 'hot';
-    }
-    row.append(who, chip, bar);
-    team.append(row);
-  }
-}
-
 function renderLobby() {
-  $('lobbyCode').textContent = G.room;
-  $('shareLink').value = `${location.origin}${location.pathname}?room=${G.room}`;
+  $('lobbyCode').textContent = G.roomName;
+  $('roomName').textContent = `${G.roomName} · ${G.players.length} ${G.players.length === 1 ? 'player' : 'players'}`;
+  const short = G.minPlayers - G.players.length;
+  $('beginBtn').disabled = short > 0;
+  $('beginNote').textContent = short > 0
+    ? `Waiting for ${short} more ${short === 1 ? 'player' : 'players'}. You need at least ${G.minPlayers} to start.`
+    : 'Anyone in the room can start. Up to 6 players.';
+  for (const id of ['retryBtn', 'againBtn']) {
+    $(id).disabled = short > 0;
+    $(id).title = short > 0 ? `You need at least ${G.minPlayers} players` : '';
+  }
+  $('shareLink').value = `${location.origin}${location.pathname}?room=${encodeURIComponent(G.room)}`;
   $('localWarn').hidden = !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
   const roster = $('roster'); roster.textContent = '';
   for (const p of G.players) {
     const li = document.createElement('li');
     li.textContent = p.name;
-    const tag = document.createElement('span'); tag.textContent = p.id === G.you ? 'YOU' : 'READY';
+    const tag = document.createElement('span'); tag.textContent = p.id === G.you ? 'YOU' : p.away ? 'RECONNECTING' : 'READY';
     li.append(tag); roster.append(li);
   }
 }
@@ -513,7 +666,7 @@ function tick() {
       if (!fresh) say('Hold still', 'warn', `Calibrating sensor ${Math.max(0, 2.5 - t).toFixed(1)}s`);
       break;
     case 'warn':
-      if (!fresh) say('Freeze', 'warn', 'Scanner incoming');
+      if (!fresh) say('Freeze', 'warn', 'Scanner incoming. Nobody move.');
       break;
     case 'sweep':
       if (!fresh) say('', '', '');
@@ -529,12 +682,16 @@ function tick() {
       if (G.torch === 'jam' && motionAll > JAM_LEVEL) L.torchVal += dt / JAM_NEEDED;
       L.torchVal = Math.min(1, L.torchVal);
       $('torchFill').style.width = L.torchVal * 100 + '%';
-      $('torchTime').textContent = Math.max(0, (G.end - serverNow()) / 1000).toFixed(1) + 's';
       const mine = me();
+      const waiting = G.players.filter(p => !p.done && p.id !== G.you).map(p => p.name);
+      const doneCount = G.players.filter(p => p.done).length;
+      $('torchTime').textContent = `${doneCount} of ${G.players.length} done`;
       if (!mine || !mine.done) {
         if (now - L.lastTorchSend > 120 || L.torchVal >= 1) { L.lastTorchSend = now; send({ t: 'torch', v: L.torchVal }); }
       }
-      if (!fresh) say(mine && mine.done ? 'Torched' : 'Torch now', 'good', mine && mine.done ? 'Waiting for the rest of the crew' : 'Scanner is recharging');
+      if (!fresh) say(mine && mine.done ? 'Torched' : 'Torch now', 'good',
+        mine && mine.done ? (waiting.length ? `Waiting for ${waiting.join(', ')}` : 'Burning through')
+          : 'The crew moves on when everyone has done it');
       break;
     }
   }
@@ -561,7 +718,7 @@ function processFrame() {
   pctx.save(); pctx.translate(W, 0); pctx.scale(-1, 1);
   pctx.drawImage(cam, 0, 0, W, H);
   pctx.restore();
-  const d = pctx.getImageData(0, 0, W, H).data, o = out.data;
+  const d = pctx.getImageData(0, 0, W, H).data, o = out.data, co = coldOut.data;
   const band = G && G.phase === 'sweep' ? beamRange() : null;
   const torching = G && G.phase === 'torch';
   let mn = 255, mx = 0, moving = 0, bandN = 0, bandMove = 0, bright = 0;
@@ -583,8 +740,19 @@ function processFrame() {
     v = Math.pow(Math.max(0, v), 1.25) * 0.82 + Math.min(1, heat[i]) * 0.5;
     const k = Math.max(0, Math.min(255, v * 255 | 0)) * 3;
     o[j] = LUT[k]; o[j + 1] = LUT[k + 1]; o[j + 2] = LUT[k + 2]; o[j + 3] = 255;
+    if (band) { co[j] = ICE[k]; co[j + 1] = ICE[k + 1]; co[j + 2] = ICE[k + 2]; co[j + 3] = 255; }
   }
   tctx.putImageData(out, 0, 0);
+  sctx.drawImage(therm, 0, 0);
+  if (band) {
+    // Everything behind the beam has been scanned: show it in ice colours
+    cctx.putImageData(coldOut, 0, 0);
+    const edge = Math.max(0, Math.min(W, (band.cx - map.dx) / map.scale));
+    if (G.beamDir > 0) sctx.drawImage(cold, 0, 0, edge, H, 0, 0, edge, H);
+    else sctx.drawImage(cold, edge, 0, W - edge, H, edge, 0, W - edge, H);
+    sctx.fillStyle = me() && me().flagged ? '#ff3048' : '#7ef0ff';
+    sctx.fillRect(Math.round(edge) - 1, 0, 1, H);
+  }
   motionAll = moving / N;
   bandFrac = bandN ? bandMove / bandN : 0;
   brightFrac = bright / N;
@@ -592,16 +760,16 @@ function processFrame() {
 
 function render() {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const cw = Math.round(innerWidth * dpr), ch = Math.round(innerHeight * dpr);
+  const cw = Math.max(1, Math.round(view.clientWidth * dpr)), ch = Math.max(1, Math.round(view.clientHeight * dpr));
   if (view.width !== cw || view.height !== ch) { view.width = cw; view.height = ch; }
   const scale = Math.max(cw / W, ch / H), dw = W * scale, dh = H * scale;
   map = { dx: (cw - dw) / 2, scale };
   vctx.imageSmoothingEnabled = true; vctx.imageSmoothingQuality = 'high';
   vctx.fillStyle = '#05060b'; vctx.fillRect(0, 0, cw, ch);
-  vctx.drawImage(therm, map.dx, (ch - dh) / 2, dw, dh);
+  vctx.drawImage(share, map.dx, (ch - dh) / 2, dw, dh);
   if ('filter' in vctx) {
-    vctx.save(); vctx.globalCompositeOperation = 'lighter'; vctx.globalAlpha = 0.3; vctx.filter = `blur(${14 * dpr}px)`;
-    vctx.drawImage(therm, map.dx, (ch - dh) / 2, dw, dh); vctx.restore();
+    vctx.save(); vctx.globalCompositeOperation = 'lighter'; vctx.globalAlpha = 0.3; vctx.filter = `blur(${8 * dpr}px)`;
+    vctx.drawImage(share, map.dx, (ch - dh) / 2, dw, dh); vctx.restore();
   }
   if (!G) return;
   if (G.phase === 'sweep') {
@@ -616,9 +784,94 @@ function render() {
   }
   if (G.phase === 'warn') {
     const a = 0.35 + 0.35 * Math.sin(performance.now() / 90);
-    const x = G.beamDir > 0 ? 0 : cw - 10 * dpr;
-    vctx.fillStyle = `rgba(126,240,255,${a})`; vctx.fillRect(x, 0, 10 * dpr, ch);
+    const x = G.beamDir > 0 ? 0 : cw - 8 * dpr;
+    vctx.fillStyle = `rgba(126,240,255,${a})`; vctx.fillRect(x, 0, 8 * dpr, ch);
   }
+}
+
+// Send this player's thermal view to the crew about 10 times a second
+let lastFrameSend = 0, sendingFrame = false;
+function sendFrame() {
+  const now = performance.now();
+  if (!G || sendingFrame || now - lastFrameSend < 100 || !ws || ws.readyState !== 1 || ws.bufferedAmount > 65536) return;
+  if (G.players.length < 2) return;
+  lastFrameSend = now; sendingFrame = true;
+  share.toBlob(b => {
+    sendingFrame = false;
+    if (b && ws.readyState === 1) b.arrayBuffer().then(buf => ws.send(buf));
+  }, 'image/jpeg', 0.75);
+}
+
+const tiles = new Map();   // player id -> { el, ctx, who, chip, wait }
+function onFrame(buf) {
+  const id = new DataView(buf).getUint32(0);
+  const tile = tiles.get(id);
+  if (!tile) return;
+  createImageBitmap(new Blob([buf.slice(4)], { type: 'image/jpeg' })).then(bmp => {
+    const c = tile.ctx.canvas, dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.max(1, Math.round(c.clientWidth * dpr)), h = Math.max(1, Math.round(c.clientHeight * dpr));
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+    tile.ctx.imageSmoothingEnabled = true; tile.ctx.imageSmoothingQuality = 'high';
+    tile.ctx.drawImage(bmp, 0, 0, w, h);
+    bmp.close();
+    tile.wait.hidden = true;
+  }).catch(() => {});
+}
+
+// Pick the column count that makes 4:3 tiles as large as possible, like a video call
+function layoutGrid() {
+  const g = $('grid'), n = g.children.length, gap = parseFloat(getComputedStyle(g).columnGap) || 12;
+  const gw = g.clientWidth, gh = g.clientHeight;
+  if (!gw || !gh) return;
+  let best = 0;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const w = Math.min((gw - gap * (cols - 1)) / cols, ((gh - gap * (rows - 1)) / rows) * 4 / 3);
+    best = Math.max(best, w);
+  }
+  g.style.setProperty('--tile-w', Math.max(90, Math.floor(best)) + 'px');
+}
+new ResizeObserver(layoutGrid).observe($('grid'));
+
+function tileStatus(p) {
+  if (p.away) return ['RECONNECTING', 'bad'];
+  if (p.flagged) return ['FLAGGED', 'bad'];
+  if (G.phase === 'sweep' || G.phase === 'warn') return p.motion >= 1 ? ['MOVING', 'bad'] : ['STILL', ''];
+  if (G.phase === 'torch') return p.done ? ['TORCHED', 'good'] : [Math.round(p.torch * 100) + '%', ''];
+  return ['READY', ''];
+}
+
+function renderTiles() {
+  const box = $('grid'), others = G.players.filter(p => p.id !== G.you);
+  let changed = false;
+  for (const [id, t] of tiles) if (!others.some(p => p.id === id)) { t.el.remove(); tiles.delete(id); changed = true; }
+  for (const p of others) {
+    let t = tiles.get(p.id);
+    if (!t) {
+      const el = document.createElement('div'); el.className = 'tile';
+      const c = document.createElement('canvas');
+      const ctx = c.getContext('2d');
+      const wait = document.createElement('div'); wait.className = 'wait'; wait.textContent = 'CONNECTING';
+      const tag = document.createElement('div'); tag.className = 'tag';
+      const who = document.createElement('span'); who.className = 'who';
+      const chip = document.createElement('span'); chip.className = 'chip';
+      tag.append(who, chip); el.append(c, wait, tag); box.append(el);
+      t = { el, ctx, who, chip, wait }; tiles.set(p.id, t); changed = true;
+    }
+    t.who.textContent = p.name;
+    const [text, cls] = tileStatus(p);
+    t.chip.textContent = text; t.chip.className = 'chip' + (cls ? ' ' + cls : '');
+    t.el.className = 'tile' + (cls ? ' ' + cls : '');
+  }
+  const mine = me();
+  if (mine) {
+    $('meWho').textContent = mine.name + ' ';
+    const y = document.createElement('small'); y.textContent = '(you)'; $('meWho').append(y);
+    const [text, cls] = tileStatus(mine);
+    $('meChip').textContent = text; $('meChip').className = 'chip' + (cls ? ' ' + cls : '');
+    $('meTile').className = 'tile me' + (cls ? ' ' + cls : '');
+  }
+  if (changed) layoutGrid();
 }
 
 function loop() {
@@ -627,6 +880,7 @@ function loop() {
   processFrame();
   tick();
   render();
+  sendFrame();
 }
 
 // ---- Screens ---------------------------------------------------------------
@@ -647,6 +901,7 @@ async function start() {
   const err = $('err'); err.hidden = true;
   const name = $('nameInput').value.trim();
   if (!name) { err.textContent = 'Enter a name so your crew knows who you are.'; err.hidden = false; $('nameInput').focus(); return; }
+  if (!ROOMS.some(r => r.id === roomCode)) { err.textContent = 'Pick a room to join.'; err.hidden = false; return; }
   try { localStorage.setItem('crownName', name); } catch (e) {}
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
     err.textContent = 'This browser blocks the camera on this address. Open the game from an https:// address.';
@@ -666,11 +921,13 @@ async function start() {
     err.hidden = false; $('startBtn').disabled = false; return;
   }
   try {
-    history.replaceState(null, '', `?room=${roomCode}`);
-    await connect(name);
+    joinName = name;
+    await connect();
+    history.replaceState(null, '', `?room=${encodeURIComponent(roomCode)}`);
   } catch (e) {
-    err.textContent = 'Could not reach the game server. Check your connection and try again.';
+    err.textContent = e.message;
     err.hidden = false; $('startBtn').disabled = false;
+    loadRooms();
   }
 }
 
