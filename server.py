@@ -21,6 +21,7 @@ MAX_FLAGS = 3      # team flags before everyone is caught
 MAX_PLAYERS = 6
 MIN_PLAYERS = 2
 MAX_FRAME = 20000  # largest thermal frame (bytes) relayed between players
+GRACE = 30         # seconds a dropped player's place in a running heist is held
 TORCHES = ["tap", "flash", "jam"]
 
 # The fixed set of rooms players can pick from, each named after a painting.
@@ -95,7 +96,7 @@ class Room:
             "maxFlags": MAX_FLAGS,
             "event": self.event,
             "players": [
-                {k: p[k] for k in ("id", "name", "motion", "torch", "done", "flagged")}
+                {k: p[k] for k in ("id", "name", "motion", "torch", "done", "flagged", "away")}
                 for p in self.players.values()
             ],
         }
@@ -207,6 +208,41 @@ def clean(text, limit):
     return text[:limit]
 
 
+async def remove_player(room, ws):
+    """Take a player out of the room for good, calling the heist off if too few are left."""
+    player = room.players.pop(ws, None)
+    if player is None:
+        return
+    if not room.players:
+        if room.task:
+            room.task.cancel()
+        if rooms.get(room.code) is room:
+            rooms.pop(room.code, None)
+    elif room.running() and len(room.players) < MIN_PLAYERS:
+        if room.task:
+            room.task.cancel()
+        room.reset()
+        room.set_event("bad", "Heist called off",
+                       "%s left. You need at least %d players to start." % (player["name"], MIN_PLAYERS))
+        await room.broadcast()
+    else:
+        await room.broadcast()
+
+
+async def drop_later(room, ws, player):
+    """Hold a dropped player's place for a while so they can reconnect mid-heist."""
+    await asyncio.sleep(GRACE)
+    if player["away"] and room.players.get(ws) is player:
+        await remove_player(room, ws)
+
+
+def find_token(room, token):
+    for other_ws, p in room.players.items():
+        if token and p["token"] == token:
+            return other_ws, p
+    return None, None
+
+
 async def ws_handler(request):
     ws = web.WebSocketResponse(heartbeat=20)
     await ws.prepare(request)
@@ -238,6 +274,23 @@ async def ws_handler(request):
                     await ws.send_json({"t": "error", "text": "That room doesn't exist. Pick one from the list."})
                     break
                 room = rooms.get(code) or rooms.setdefault(code, Room(code))
+                token = clean(msg.get("token", ""), 40)
+
+                # Reconnecting player: give them their old place back
+                old_ws, old = find_token(room, token)
+                if old is not None:
+                    del room.players[old_ws]
+                    room.players[ws] = old
+                    old["away"] = False
+                    if old.get("drop_task"):
+                        old["drop_task"].cancel()
+                        old["drop_task"] = None
+                    player = old
+                    if not old_ws.closed:
+                        await old_ws.close()
+                    await room.broadcast()
+                    continue
+
                 problem = None
                 if len(room.players) >= MAX_PLAYERS:
                     problem = "%s is full (%d players). Pick another room." % (PAINTING[code]["name"], MAX_PLAYERS)
@@ -250,29 +303,22 @@ async def ws_handler(request):
                     room = None
                     break
                 player = {"id": room.next_id, "name": clean(msg.get("name", ""), 20) or "Player %d" % room.next_id,
-                          "motion": 0, "torch": 0, "done": False, "flagged": False}
+                          "motion": 0, "torch": 0, "done": False, "flagged": False,
+                          "away": False, "token": token, "drop_task": None}
                 room.next_id += 1
                 room.players[ws] = player
                 await room.broadcast()
                 continue
             await room.on_message(player, msg)
     finally:
-        if room is not None and ws in room.players:
-            del room.players[ws]
-            if not room.players:
-                if room.task:
-                    room.task.cancel()
-                rooms.pop(room.code, None)
-            elif room.running() and len(room.players) < MIN_PLAYERS:
-                # Not enough players left to carry on: call the heist off
-                if room.task:
-                    room.task.cancel()
-                room.reset()
-                room.set_event("bad", "Heist called off",
-                               "%s left. You need at least %d players to start." % (player["name"], MIN_PLAYERS))
+        # Only act if this connection still owns the player (a reconnect may have replaced it)
+        if room is not None and room.players.get(ws) is player:
+            if room.running():
+                player["away"] = True
+                player["drop_task"] = asyncio.ensure_future(drop_later(room, ws, player))
                 await room.broadcast()
             else:
-                await room.broadcast()
+                await remove_player(room, ws)
     return ws
 
 
@@ -291,7 +337,7 @@ async def list_rooms(request):
 
 
 async def index(request):
-    return web.FileResponse(os.path.join(STATIC, "index.html"))
+    return web.FileResponse(os.path.join(STATIC, "index.html"), headers={"Cache-Control": "no-cache"})
 
 
 async def clip(request):
@@ -301,8 +347,22 @@ async def clip(request):
     return web.FileResponse(path)
 
 
+async def close_all(app):
+    """On shutdown (e.g. a redeploy), close every connection right away so players
+    reconnect to the new server instead of waiting on this one."""
+    for room in list(rooms.values()):
+        if room.task:
+            room.task.cancel()
+        for ws in list(room.players):
+            try:
+                await ws.close(code=1012, message=b"Server restarting")
+            except Exception:
+                pass
+
+
 def main():
     app = web.Application()
+    app.on_shutdown.append(close_all)
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/rooms", list_rooms)
